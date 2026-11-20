@@ -64,15 +64,24 @@ class WalkingCadenceManager private constructor(context: Context) : SensorEventL
         ) == PackageManager.PERMISSION_GRANTED
     }
 
-    fun ensureAlwaysOnStarted(): Boolean {
+    fun startSensorsOnly(): Boolean {
         if (!hasPermission()) {
             return false
         }
-        CadenceAlwaysOnService.start(appContext)
         registerSingleHardwareSensor(
             batchLatencyUs = if (isForegroundUiActive) 0 else BACKGROUND_BATCH_LATENCY_US
         )
         _isTracking.value = true
+        return true
+    }
+
+    fun ensureAlwaysOnStarted(): Boolean {
+        if (!startSensorsOnly()) {
+            return false
+        }
+        if (!CadenceAlwaysOnService.isRunning) {
+            CadenceAlwaysOnService.start(appContext)
+        }
         return true
     }
 

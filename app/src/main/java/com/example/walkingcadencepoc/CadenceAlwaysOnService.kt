@@ -15,21 +15,31 @@ private const val NOTIFICATION_ID = 1001
 
 class CadenceAlwaysOnService : Service() {
 
+    private var foregroundStarted = false
+
     override fun onCreate() {
         super.onCreate()
-        startInForeground()
-        WalkingCadenceManager.getInstance(applicationContext).ensureAlwaysOnStarted()
+        isRunning = true
+        ensureForegroundOnce()
+        WalkingCadenceManager.getInstance(applicationContext).startSensorsOnly()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startInForeground()
-        WalkingCadenceManager.getInstance(applicationContext).ensureAlwaysOnStarted()
+        ensureForegroundOnce()
+        WalkingCadenceManager.getInstance(applicationContext).startSensorsOnly()
         return START_STICKY
+    }
+
+    override fun onDestroy() {
+        isRunning = false
+        foregroundStarted = false
+        super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun startInForeground() {
+    private fun ensureForegroundOnce() {
+        if (foregroundStarted) return
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -58,11 +68,17 @@ class CadenceAlwaysOnService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            foregroundStarted = true
         }
     }
 
     companion object {
+        @Volatile
+        var isRunning: Boolean = false
+            private set
+
         fun start(context: Context) {
+            if (isRunning) return
             runCatching {
                 val appCtx = context.applicationContext
                 val intent = Intent(appCtx, CadenceAlwaysOnService::class.java)
