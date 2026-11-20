@@ -12,25 +12,30 @@ import androidx.wear.watchface.complications.data.ShortTextComplicationData
 import androidx.wear.watchface.complications.datasource.ComplicationRequest
 import androidx.wear.watchface.complications.datasource.SuspendingComplicationDataSourceService
 
-private const val MIN_CADENCE_SPM = 40f
+private const val MIN_CADENCE_SPM = 0f
 private const val MAX_CADENCE_SPM = 180f
 
 class CadenceComplicationService : SuspendingComplicationDataSourceService() {
+
+    override fun onComplicationActivated(complicationInstanceId: Int, type: ComplicationType) {
+        super.onComplicationActivated(complicationInstanceId, type)
+        WalkingCadenceManager.getInstance(applicationContext).ensureAlwaysOnStarted()
+    }
 
     override fun getPreviewData(type: ComplicationType): ComplicationData? {
         return buildComplicationData(
             type = type,
             spm = 120,
-            isTracking = true,
             tapAction = null
         )
     }
 
     override suspend fun onComplicationRequest(request: ComplicationRequest): ComplicationData? {
         val manager = WalkingCadenceManager.getInstance(applicationContext)
-        val isTracking = manager.isTracking.value
-        val latest10sSpm = manager.spmHistory.value.lastOrNull()
-            ?: manager.cadenceSpm.value?.toInt()
+        manager.ensureAlwaysOnStarted()
+        val latestSpm = manager.cadenceSpm.value?.toInt()
+            ?: manager.spmHistory.value.lastOrNull()
+            ?: 0
 
         val tapIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -44,23 +49,17 @@ class CadenceComplicationService : SuspendingComplicationDataSourceService() {
 
         return buildComplicationData(
             type = request.complicationType,
-            spm = if (isTracking) latest10sSpm else null,
-            isTracking = isTracking,
+            spm = latestSpm,
             tapAction = tapPendingIntent
         )
     }
 
     private fun buildComplicationData(
         type: ComplicationType,
-        spm: Int?,
-        isTracking: Boolean,
+        spm: Int,
         tapAction: PendingIntent?
     ): ComplicationData? {
-        val valueString = when {
-            spm != null -> spm.toString()
-            isTracking -> "..."
-            else -> "--"
-        }
+        val valueString = spm.toString()
         val plainValue = PlainComplicationText.Builder(valueString).build()
         val contentDesc = PlainComplicationText.Builder("Walking cadence $valueString SPM").build()
         val walkIcon = MonochromaticImage.Builder(
@@ -69,10 +68,7 @@ class CadenceComplicationService : SuspendingComplicationDataSourceService() {
 
         return when (type) {
             ComplicationType.RANGED_VALUE -> {
-                val numericValue = (spm?.toFloat() ?: MIN_CADENCE_SPM)
-                    .coerceIn(MIN_CADENCE_SPM, MAX_CADENCE_SPM)
-                // Match Pixel Watch Active watch face Heart Rate indicator style:
-                // circular progress ring (40..180) + centered number + bottom gap icon (no title).
+                val numericValue = spm.toFloat().coerceIn(MIN_CADENCE_SPM, MAX_CADENCE_SPM)
                 RangedValueComplicationData.Builder(
                     value = numericValue,
                     min = MIN_CADENCE_SPM,

@@ -1,8 +1,5 @@
 package com.example.walkingcadencepoc
 
-import android.Manifest
-import android.content.pm.PackageManager
-import androidx.core.content.ContextCompat
 import androidx.wear.protolayout.ActionBuilders
 import androidx.wear.protolayout.ColorBuilders.argb
 import androidx.wear.protolayout.DimensionBuilders.dp
@@ -13,7 +10,6 @@ import androidx.wear.protolayout.LayoutElementBuilders
 import androidx.wear.protolayout.LayoutElementBuilders.Box
 import androidx.wear.protolayout.LayoutElementBuilders.Column
 import androidx.wear.protolayout.LayoutElementBuilders.FontStyle
-import androidx.wear.protolayout.LayoutElementBuilders.Layout
 import androidx.wear.protolayout.LayoutElementBuilders.Row
 import androidx.wear.protolayout.LayoutElementBuilders.Spacer
 import androidx.wear.protolayout.LayoutElementBuilders.Text
@@ -30,11 +26,10 @@ import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.guava.future
 
 private const val RESOURCES_VERSION = "1"
-private const val ID_TOGGLE_TRACKING = "toggle_tracking"
+private const val ID_RESET_HISTORY = "reset_history"
 private const val ID_OPEN_APP = "open_app"
 
 class CadenceTileService : TileService() {
@@ -44,22 +39,13 @@ class CadenceTileService : TileService() {
     override fun onTileRequest(requestParams: RequestBuilders.TileRequest): ListenableFuture<Tile> {
         return serviceScope.future {
             val manager = WalkingCadenceManager.getInstance(applicationContext)
-            val hasPermission = ContextCompat.checkSelfPermission(
-                applicationContext,
-                Manifest.permission.ACTIVITY_RECOGNITION
-            ) == PackageManager.PERMISSION_GRANTED
+            manager.ensureAlwaysOnStarted()
 
-            if (requestParams.currentState.lastClickableId == ID_TOGGLE_TRACKING) {
-                if (manager.isTracking.value) {
-                    manager.stopWalkingSession()
-                } else if (hasPermission) {
-                    manager.startWalkingSession()
-                    delay(400L)
-                }
+            if (requestParams.currentState.lastClickableId == ID_RESET_HISTORY) {
+                manager.resetHistory()
             }
 
-            val isTracking = manager.isTracking.value
-            val currentSpm = manager.cadenceSpm.value?.toInt()
+            val currentSpm = manager.cadenceSpm.value?.toInt() ?: 0
             val history = manager.spmHistory.value
 
             val openAppAction = ActionBuilders.LaunchAction.Builder()
@@ -76,26 +62,21 @@ class CadenceTileService : TileService() {
                 .setOnClick(openAppAction)
                 .build()
 
-            val toggleClickable = if (hasPermission || isTracking) {
-                Clickable.Builder()
-                    .setId(ID_TOGGLE_TRACKING)
-                    .setOnClick(ActionBuilders.LoadAction.Builder().build())
-                    .build()
-            } else {
-                openAppClickable
-            }
+            val resetClickable = Clickable.Builder()
+                .setId(ID_RESET_HISTORY)
+                .setOnClick(ActionBuilders.LoadAction.Builder().build())
+                .build()
 
             val rootElement = buildTileLayout(
                 currentSpm = currentSpm,
-                isTracking = isTracking,
                 history = history,
                 openAppClickable = openAppClickable,
-                toggleClickable = toggleClickable
+                resetClickable = resetClickable
             )
 
             Tile.Builder()
                 .setResourcesVersion(RESOURCES_VERSION)
-                .setFreshnessIntervalMillis(if (isTracking) SAMPLE_INTERVAL_MS else 0L)
+                .setFreshnessIntervalMillis(SAMPLE_INTERVAL_MS)
                 .setTileTimeline(Timeline.fromLayoutElement(rootElement))
                 .build()
         }
@@ -112,20 +93,13 @@ class CadenceTileService : TileService() {
     }
 
     private fun buildTileLayout(
-        currentSpm: Int?,
-        isTracking: Boolean,
+        currentSpm: Int,
         history: List<Int>,
         openAppClickable: Clickable,
-        toggleClickable: Clickable
+        resetClickable: Clickable
     ): LayoutElementBuilders.LayoutElement {
-        val spmText = when {
-            currentSpm != null -> "$currentSpm SPM"
-            isTracking -> "... SPM"
-            else -> "-- SPM"
-        }
-
         val header = Text.Builder()
-            .setText(spmText)
+            .setText("$currentSpm SPM")
             .setFontStyle(
                 FontStyle.Builder()
                     .setSize(sp(20f))
@@ -142,33 +116,30 @@ class CadenceTileService : TileService() {
 
         val barRow = buildBarGraphRow(history)
 
-        val buttonColor = if (isTracking) 0xFFCF6679.toInt() else 0xFF00E5FF.toInt()
-        val buttonTextColor = if (isTracking) 0xFFFFFFFF.toInt() else 0xFF000000.toInt()
-
         val actionButton = Box.Builder()
             .setWidth(dp(76f))
-            .setHeight(dp(30f))
+            .setHeight(dp(28f))
             .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
             .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
             .setModifiers(
                 Modifiers.Builder()
-                    .setClickable(toggleClickable)
+                    .setClickable(resetClickable)
                     .setBackground(
                         Background.Builder()
-                            .setColor(argb(buttonColor))
-                            .setCorner(Corner.Builder().setRadius(dp(15f)).build())
+                            .setColor(argb(0xFF37474F.toInt()))
+                            .setCorner(Corner.Builder().setRadius(dp(14f)).build())
                             .build()
                     )
                     .build()
             )
             .addContent(
                 Text.Builder()
-                    .setText(if (isTracking) "Stop" else "Start")
+                    .setText("Reset")
                     .setFontStyle(
                         FontStyle.Builder()
-                            .setSize(sp(12f))
+                            .setSize(sp(11f))
                             .setWeight(LayoutElementBuilders.FONT_WEIGHT_BOLD)
-                            .setColor(argb(buttonTextColor))
+                            .setColor(argb(0xFFFFFFFF.toInt()))
                             .build()
                     )
                     .build()
@@ -197,7 +168,7 @@ class CadenceTileService : TileService() {
 
     private fun buildBarGraphRow(history: List<Int>): LayoutElementBuilders.LayoutElement {
         val maxScale = maxOf(180, history.maxOrNull() ?: 180)
-        val minScale = 40
+        val minScale = 0
         val rowBuilder = Row.Builder()
             .setWidth(wrap())
             .setHeight(dp(70f))
@@ -217,7 +188,7 @@ class CadenceTileService : TileService() {
 
             if (value != null) {
                 val fraction = ((value - minScale).coerceAtLeast(10).toFloat() /
-                    (maxScale - minScale).coerceAtLeast(1)).coerceIn(0.15f, 1f)
+                    (maxScale - minScale).coerceAtLeast(1)).coerceIn(0.12f, 1f)
                 val barHeightDp = 48f * fraction
                 val barColor = if (isLatest) 0xFF00E5FF.toInt() else 0xFFBB86FC.toInt()
                 val labelColor = if (isLatest) 0xFF00E5FF.toInt() else 0xFFB0BEC5.toInt()

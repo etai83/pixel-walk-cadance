@@ -21,9 +21,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -33,7 +33,6 @@ import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material.Button
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
-import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -52,15 +51,19 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun CadenceScreen(manager: WalkingCadenceManager) {
     val cadence by manager.cadenceSpm.collectAsState()
-    val isTracking by manager.isTracking.collectAsState()
     val spmHistory by manager.spmHistory.collectAsState()
-    val scope = rememberCoroutineScope()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            scope.launch { manager.startWalkingSession() }
+            manager.ensureAlwaysOnStarted()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (!manager.ensureAlwaysOnStarted()) {
+            permissionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
         }
     }
 
@@ -72,7 +75,7 @@ fun CadenceScreen(manager: WalkingCadenceManager) {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = cadence?.let { "${it.toInt()} SPM" } ?: "-- SPM",
+            text = "${cadence?.toInt() ?: 0} SPM",
             fontSize = 20.sp,
             fontWeight = FontWeight.Bold
         )
@@ -86,19 +89,13 @@ fun CadenceScreen(manager: WalkingCadenceManager) {
         Spacer(modifier = Modifier.height(6.dp))
         Button(
             modifier = Modifier
-                .height(32.dp)
-                .width(72.dp),
-            onClick = {
-                if (isTracking) {
-                    scope.launch { manager.stopWalkingSession() }
-                } else {
-                    permissionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
-                }
-            }
+                .height(30.dp)
+                .width(76.dp),
+            onClick = { manager.resetHistory() }
         ) {
             Text(
-                text = if (isTracking) "Stop" else "Start",
-                fontSize = 12.sp
+                text = "Reset",
+                fontSize = 11.sp
             )
         }
     }
@@ -110,7 +107,7 @@ fun CadenceBarGraph(
     modifier: Modifier = Modifier
 ) {
     val maxScale = maxOf(180, history.maxOrNull() ?: 180)
-    val minScale = 40
+    val minScale = 0
 
     Row(
         modifier = modifier,
@@ -130,7 +127,7 @@ fun CadenceBarGraph(
             ) {
                 if (value != null) {
                     val fraction = ((value - minScale).coerceAtLeast(10).toFloat() /
-                        (maxScale - minScale).coerceAtLeast(1)).coerceIn(0.15f, 1f)
+                        (maxScale - minScale).coerceAtLeast(1)).coerceIn(0.12f, 1f)
                     val barHeight = 52.dp * fraction
 
                     Text(
