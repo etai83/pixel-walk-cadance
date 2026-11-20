@@ -42,8 +42,9 @@ class CadenceAlwaysOnService : Service() {
 
         val notification = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Walking Cadence Active")
-            .setContentText("Monitoring step cadence every 10s")
+            .setContentText("Low-power hardware step monitor")
             .setSmallIcon(R.drawable.ic_walk)
+            .setLocalOnly(true)
             .setOngoing(true)
             .build()
 

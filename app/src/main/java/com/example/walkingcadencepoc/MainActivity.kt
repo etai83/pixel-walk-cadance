@@ -35,16 +35,28 @@ import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
 
 class MainActivity : ComponentActivity() {
+    private lateinit var manager: WalkingCadenceManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        val manager = WalkingCadenceManager.getInstance(applicationContext)
+        manager = WalkingCadenceManager.getInstance(applicationContext)
 
         setContent {
             MaterialTheme {
                 CadenceScreen(manager)
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        manager.setForegroundUiActive(true)
+    }
+
+    override fun onStop() {
+        manager.setForegroundUiActive(false)
+        super.onStop()
     }
 }
 

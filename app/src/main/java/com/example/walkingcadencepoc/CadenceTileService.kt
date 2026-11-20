@@ -76,7 +76,7 @@ class CadenceTileService : TileService() {
 
             Tile.Builder()
                 .setResourcesVersion(RESOURCES_VERSION)
-                .setFreshnessIntervalMillis(SAMPLE_INTERVAL_MS)
+                .setFreshnessIntervalMillis(0L)
                 .setTileTimeline(Timeline.fromLayoutElement(rootElement))
                 .build()
         }
