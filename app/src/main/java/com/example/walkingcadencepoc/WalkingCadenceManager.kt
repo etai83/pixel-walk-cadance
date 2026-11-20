@@ -10,14 +10,30 @@ import androidx.health.services.client.data.ExerciseConfig
 import androidx.health.services.client.data.ExerciseLapSummary
 import androidx.health.services.client.data.ExerciseType
 import androidx.health.services.client.data.ExerciseUpdate
+import androidx.wear.tiles.TileService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.guava.await
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
-class WalkingCadenceManager(context: Context) {
+const val MAX_BARS = 8
+const val SAMPLE_INTERVAL_MS = 10_000L
 
-    private val exerciseClient = HealthServices.getClient(context).exerciseClient
+class WalkingCadenceManager private constructor(context: Context) {
+
+    private val appContext = context.applicationContext
+    private val exerciseClient = HealthServices.getClient(appContext).exerciseClient
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var historyJob: Job? = null
 
     private val _cadenceSpm = MutableStateFlow<Double?>(null)
     val cadenceSpm: StateFlow<Double?> = _cadenceSpm.asStateFlow()
@@ -25,15 +41,23 @@ class WalkingCadenceManager(context: Context) {
     private val _isTracking = MutableStateFlow(false)
     val isTracking: StateFlow<Boolean> = _isTracking.asStateFlow()
 
+    private val _spmHistory = MutableStateFlow<List<Int>>(emptyList())
+    val spmHistory: StateFlow<List<Int>> = _spmHistory.asStateFlow()
+
     private val callback = object : ExerciseUpdateCallback {
         override fun onExerciseUpdateReceived(update: ExerciseUpdate) {
             val state = update.exerciseStateInfo.state
             if (state.isEnded) {
                 _isTracking.value = false
                 _cadenceSpm.value = null
+                stopHistoryTicker()
+                requestTileUpdate()
                 return
             }
-            _isTracking.value = true
+            if (!_isTracking.value) {
+                _isTracking.value = true
+                startHistoryTickerIfNeeded()
+            }
 
             val latestMetrics = update.latestMetrics
             val spmPoints = latestMetrics.getData(DataType.STEPS_PER_MINUTE)
@@ -48,8 +72,12 @@ class WalkingCadenceManager(context: Context) {
                 } else {
                     raw.toDouble()
                 }
+                val wasNull = _cadenceSpm.value == null
                 Log.d("WalkingCadence", "STEPS_PER_MINUTE update: raw=$raw decoded=$spm")
                 _cadenceSpm.value = spm
+                if (wasNull) {
+                    requestTileUpdate()
+                }
             }
         }
 
@@ -57,8 +85,38 @@ class WalkingCadenceManager(context: Context) {
         override fun onRegistered() {}
         override fun onRegistrationFailed(throwable: Throwable) {
             _isTracking.value = false
+            stopHistoryTicker()
+            requestTileUpdate()
         }
         override fun onAvailabilityChanged(dataType: DataType<*, *>, availability: Availability) {}
+    }
+
+    private fun startHistoryTickerIfNeeded() {
+        if (historyJob?.isActive == true) return
+        historyJob = scope.launch {
+            _spmHistory.value = emptyList()
+            val firstSpm = _cadenceSpm.filterNotNull().first().toInt()
+            _spmHistory.value = listOf(firstSpm)
+            requestTileUpdate()
+            while (isActive) {
+                delay(SAMPLE_INTERVAL_MS)
+                _cadenceSpm.value?.toInt()?.let { latestSpm ->
+                    _spmHistory.value = (_spmHistory.value + latestSpm).takeLast(MAX_BARS)
+                    requestTileUpdate()
+                }
+            }
+        }
+    }
+
+    private fun stopHistoryTicker() {
+        historyJob?.cancel()
+        historyJob = null
+    }
+
+    private fun requestTileUpdate() {
+        runCatching {
+            TileService.getUpdater(appContext).requestUpdate(CadenceTileService::class.java)
+        }
     }
 
     suspend fun startWalkingSession(): Boolean {
@@ -80,13 +138,32 @@ class WalkingCadenceManager(context: Context) {
         exerciseClient.setUpdateCallback(callback)
         exerciseClient.startExerciseAsync(config).await()
         _isTracking.value = true
+        startHistoryTickerIfNeeded()
+        requestTileUpdate()
         return true
     }
 
     suspend fun stopWalkingSession() {
-        exerciseClient.endExerciseAsync().await()
-        exerciseClient.clearUpdateCallbackAsync(callback).await()
+        stopHistoryTicker()
+        runCatching {
+            exerciseClient.endExerciseAsync().await()
+            exerciseClient.clearUpdateCallbackAsync(callback).await()
+        }
         _isTracking.value = false
         _cadenceSpm.value = null
+        requestTileUpdate()
+    }
+
+    companion object {
+        @Volatile
+        private var instance: WalkingCadenceManager? = null
+
+        fun getInstance(context: Context): WalkingCadenceManager {
+            return instance ?: synchronized(this) {
+                instance ?: WalkingCadenceManager(context.applicationContext).also {
+                    instance = it
+                }
+            }
+        }
     }
 }

@@ -21,11 +21,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,20 +33,13 @@ import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material.Button
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.filterNotNull
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-
-private const val MAX_BARS = 8
-private const val SAMPLE_INTERVAL_MS = 10_000L
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        val manager = WalkingCadenceManager(applicationContext)
+        val manager = WalkingCadenceManager.getInstance(applicationContext)
 
         setContent {
             MaterialTheme {
@@ -63,25 +53,8 @@ class MainActivity : ComponentActivity() {
 fun CadenceScreen(manager: WalkingCadenceManager) {
     val cadence by manager.cadenceSpm.collectAsState()
     val isTracking by manager.isTracking.collectAsState()
+    val spmHistory by manager.spmHistory.collectAsState()
     val scope = rememberCoroutineScope()
-    val spmHistory = remember { mutableStateListOf<Int>() }
-
-    LaunchedEffect(isTracking) {
-        if (isTracking) {
-            spmHistory.clear()
-            val firstSpm = manager.cadenceSpm.filterNotNull().first().toInt()
-            spmHistory.add(firstSpm)
-            while (isActive) {
-                delay(SAMPLE_INTERVAL_MS)
-                manager.cadenceSpm.value?.toInt()?.let { latestSpm ->
-                    if (spmHistory.size >= MAX_BARS) {
-                        spmHistory.removeAt(0)
-                    }
-                    spmHistory.add(latestSpm)
-                }
-            }
-        }
-    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
