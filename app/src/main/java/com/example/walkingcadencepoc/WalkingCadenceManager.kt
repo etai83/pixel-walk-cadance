@@ -1,5 +1,6 @@
 package com.example.walkingcadencepoc
 
+import android.content.ComponentName
 import android.content.Context
 import android.util.Log
 import androidx.health.services.client.ExerciseUpdateCallback
@@ -11,6 +12,7 @@ import androidx.health.services.client.data.ExerciseLapSummary
 import androidx.health.services.client.data.ExerciseType
 import androidx.health.services.client.data.ExerciseUpdate
 import androidx.wear.tiles.TileService
+import androidx.wear.watchface.complications.datasource.ComplicationDataSourceUpdateRequester
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -51,7 +53,7 @@ class WalkingCadenceManager private constructor(context: Context) {
                 _isTracking.value = false
                 _cadenceSpm.value = null
                 stopHistoryTicker()
-                requestTileUpdate()
+                requestWidgetUpdates()
                 return
             }
             if (!_isTracking.value) {
@@ -76,7 +78,7 @@ class WalkingCadenceManager private constructor(context: Context) {
                 Log.d("WalkingCadence", "STEPS_PER_MINUTE update: raw=$raw decoded=$spm")
                 _cadenceSpm.value = spm
                 if (wasNull) {
-                    requestTileUpdate()
+                    requestWidgetUpdates()
                 }
             }
         }
@@ -86,7 +88,7 @@ class WalkingCadenceManager private constructor(context: Context) {
         override fun onRegistrationFailed(throwable: Throwable) {
             _isTracking.value = false
             stopHistoryTicker()
-            requestTileUpdate()
+            requestWidgetUpdates()
         }
         override fun onAvailabilityChanged(dataType: DataType<*, *>, availability: Availability) {}
     }
@@ -97,12 +99,12 @@ class WalkingCadenceManager private constructor(context: Context) {
             _spmHistory.value = emptyList()
             val firstSpm = _cadenceSpm.filterNotNull().first().toInt()
             _spmHistory.value = listOf(firstSpm)
-            requestTileUpdate()
+            requestWidgetUpdates()
             while (isActive) {
                 delay(SAMPLE_INTERVAL_MS)
                 _cadenceSpm.value?.toInt()?.let { latestSpm ->
                     _spmHistory.value = (_spmHistory.value + latestSpm).takeLast(MAX_BARS)
-                    requestTileUpdate()
+                    requestWidgetUpdates()
                 }
             }
         }
@@ -113,9 +115,15 @@ class WalkingCadenceManager private constructor(context: Context) {
         historyJob = null
     }
 
-    private fun requestTileUpdate() {
+    private fun requestWidgetUpdates() {
         runCatching {
             TileService.getUpdater(appContext).requestUpdate(CadenceTileService::class.java)
+        }
+        runCatching {
+            ComplicationDataSourceUpdateRequester.create(
+                appContext,
+                ComponentName(appContext, CadenceComplicationService::class.java)
+            ).requestUpdateAll()
         }
     }
 
@@ -139,7 +147,7 @@ class WalkingCadenceManager private constructor(context: Context) {
         exerciseClient.startExerciseAsync(config).await()
         _isTracking.value = true
         startHistoryTickerIfNeeded()
-        requestTileUpdate()
+        requestWidgetUpdates()
         return true
     }
 
@@ -151,7 +159,7 @@ class WalkingCadenceManager private constructor(context: Context) {
         }
         _isTracking.value = false
         _cadenceSpm.value = null
-        requestTileUpdate()
+        requestWidgetUpdates()
     }
 
     companion object {
