@@ -1,6 +1,7 @@
 package com.example.walkingcadencepoc
 
 import android.content.Context
+import android.util.Log
 import androidx.health.services.client.ExerciseUpdateCallback
 import androidx.health.services.client.HealthServices
 import androidx.health.services.client.data.Availability
@@ -26,18 +27,29 @@ class WalkingCadenceManager(context: Context) {
 
     private val callback = object : ExerciseUpdateCallback {
         override fun onExerciseUpdateReceived(update: ExerciseUpdate) {
-            if (update.exerciseStateInfo.state.isEnded) {
+            val state = update.exerciseStateInfo.state
+            if (state.isEnded) {
                 _isTracking.value = false
                 _cadenceSpm.value = null
                 return
             }
+            _isTracking.value = true
 
             val latestMetrics = update.latestMetrics
             val spmPoints = latestMetrics.getData(DataType.STEPS_PER_MINUTE)
 
             // Grab the most recent cadence reading
             spmPoints.lastOrNull()?.let { point ->
-                _cadenceSpm.value = point.value.toDouble()
+                val raw = point.value
+                // Wear OS 5 emulator SyntheticConfigurationDataStore serializes custom
+                // STEPS_PER_MINUTE as IEEE-754 float bits read as int32 by Synthetic HAL.
+                val spm = if (raw > 1000L) {
+                    Float.fromBits(raw.toInt()).toDouble()
+                } else {
+                    raw.toDouble()
+                }
+                Log.d("WalkingCadence", "STEPS_PER_MINUTE update: raw=$raw decoded=$spm")
+                _cadenceSpm.value = spm
             }
         }
 
