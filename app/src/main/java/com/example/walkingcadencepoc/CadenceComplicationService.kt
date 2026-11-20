@@ -5,7 +5,6 @@ import android.content.Intent
 import android.graphics.drawable.Icon
 import androidx.wear.watchface.complications.data.ComplicationData
 import androidx.wear.watchface.complications.data.ComplicationType
-import androidx.wear.watchface.complications.data.LongTextComplicationData
 import androidx.wear.watchface.complications.data.MonochromaticImage
 import androidx.wear.watchface.complications.data.PlainComplicationText
 import androidx.wear.watchface.complications.data.RangedValueComplicationData
@@ -13,12 +12,15 @@ import androidx.wear.watchface.complications.data.ShortTextComplicationData
 import androidx.wear.watchface.complications.datasource.ComplicationRequest
 import androidx.wear.watchface.complications.datasource.SuspendingComplicationDataSourceService
 
+private const val MIN_CADENCE_SPM = 40f
+private const val MAX_CADENCE_SPM = 180f
+
 class CadenceComplicationService : SuspendingComplicationDataSourceService() {
 
     override fun getPreviewData(type: ComplicationType): ComplicationData? {
         return buildComplicationData(
             type = type,
-            spm = 125,
+            spm = 120,
             isTracking = true,
             tapAction = null
         )
@@ -60,45 +62,34 @@ class CadenceComplicationService : SuspendingComplicationDataSourceService() {
             else -> "--"
         }
         val plainValue = PlainComplicationText.Builder(valueString).build()
-        val plainTitle = PlainComplicationText.Builder("SPM").build()
         val contentDesc = PlainComplicationText.Builder("Walking cadence $valueString SPM").build()
         val walkIcon = MonochromaticImage.Builder(
             Icon.createWithResource(this, R.drawable.ic_walk)
         ).build()
 
         return when (type) {
+            ComplicationType.RANGED_VALUE -> {
+                val numericValue = (spm?.toFloat() ?: MIN_CADENCE_SPM)
+                    .coerceIn(MIN_CADENCE_SPM, MAX_CADENCE_SPM)
+                // Match Pixel Watch Active watch face Heart Rate indicator style:
+                // circular progress ring (40..180) + centered number + bottom gap icon (no title).
+                RangedValueComplicationData.Builder(
+                    value = numericValue,
+                    min = MIN_CADENCE_SPM,
+                    max = MAX_CADENCE_SPM,
+                    contentDescription = contentDesc
+                )
+                    .setText(plainValue)
+                    .setMonochromaticImage(walkIcon)
+                    .setTapAction(tapAction)
+                    .build()
+            }
+
             ComplicationType.SHORT_TEXT -> {
                 ShortTextComplicationData.Builder(
                     text = plainValue,
                     contentDescription = contentDesc
                 )
-                    .setTitle(plainTitle)
-                    .setMonochromaticImage(walkIcon)
-                    .setTapAction(tapAction)
-                    .build()
-            }
-
-            ComplicationType.RANGED_VALUE -> {
-                val numericValue = (spm ?: 0).toFloat().coerceIn(0f, 180f)
-                RangedValueComplicationData.Builder(
-                    value = numericValue,
-                    min = 0f,
-                    max = 180f,
-                    contentDescription = contentDesc
-                )
-                    .setText(plainValue)
-                    .setTitle(plainTitle)
-                    .setMonochromaticImage(walkIcon)
-                    .setTapAction(tapAction)
-                    .build()
-            }
-
-            ComplicationType.LONG_TEXT -> {
-                LongTextComplicationData.Builder(
-                    text = PlainComplicationText.Builder("$valueString SPM").build(),
-                    contentDescription = contentDesc
-                )
-                    .setTitle(PlainComplicationText.Builder("Cadence").build())
                     .setMonochromaticImage(walkIcon)
                     .setTapAction(tapAction)
                     .build()
