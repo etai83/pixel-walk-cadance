@@ -19,7 +19,9 @@ class CadenceComplicationService : SuspendingComplicationDataSourceService() {
 
     override fun onComplicationActivated(complicationInstanceId: Int, type: ComplicationType) {
         super.onComplicationActivated(complicationInstanceId, type)
-        WalkingCadenceManager.getInstance(applicationContext).ensureAlwaysOnStarted()
+        runCatching {
+            WalkingCadenceManager.getInstance(applicationContext).ensureAlwaysOnStarted()
+        }
     }
 
     override fun getPreviewData(type: ComplicationType): ComplicationData? {
@@ -32,7 +34,7 @@ class CadenceComplicationService : SuspendingComplicationDataSourceService() {
 
     override suspend fun onComplicationRequest(request: ComplicationRequest): ComplicationData? {
         val manager = WalkingCadenceManager.getInstance(applicationContext)
-        manager.ensureAlwaysOnStarted()
+        runCatching { manager.ensureAlwaysOnStarted() }
         val latestSpm = manager.cadenceSpm.value?.toInt()
             ?: manager.spmHistory.value.lastOrNull()
             ?: 0

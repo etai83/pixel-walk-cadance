@@ -1,7 +1,12 @@
 package com.example.walkingcadencepoc
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -24,12 +29,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.ActivityCompat
 import androidx.wear.compose.material.Button
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
@@ -52,6 +64,11 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         manager.setForegroundUiActive(true)
+        if (manager.hasPermission()) {
+            manager.ensureAlwaysOnStarted()
+        } else {
+            manager.releaseIfUnauthorized()
+        }
     }
 
     override fun onStop() {
@@ -62,20 +79,45 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun CadenceScreen(manager: WalkingCadenceManager) {
+    val context = LocalContext.current
     val cadence by manager.cadenceSpm.collectAsState()
     val spmHistory by manager.spmHistory.collectAsState()
+    val status by manager.statusMessage.collectAsState()
+    var askedForPermission by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        askedForPermission = true
+        manager.ensureAlwaysOnStarted()
+    }
+
+    fun requestPermissionsOrSettings() {
+        val missing = manager.permissionsToRequest()
+        val activity = context as? Activity
+        val activityRecognitionDenied = Manifest.permission.ACTIVITY_RECOGNITION in missing
+        val permanentlyDenied = askedForPermission &&
+            activityRecognitionDenied &&
+            activity != null &&
+            !ActivityCompat.shouldShowRequestPermissionRationale(
+                activity,
+                Manifest.permission.ACTIVITY_RECOGNITION
+            )
+        if (permanentlyDenied) {
+            openAppPermissionSettings(context)
+        } else if (missing.isNotEmpty()) {
+            permissionLauncher.launch(missing.toTypedArray())
+        } else {
             manager.ensureAlwaysOnStarted()
         }
     }
 
     LaunchedEffect(Unit) {
-        if (!manager.ensureAlwaysOnStarted()) {
-            permissionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+        val missing = manager.permissionsToRequest()
+        if (missing.isEmpty()) {
+            manager.ensureAlwaysOnStarted()
+        } else {
+            permissionLauncher.launch(missing.toTypedArray())
         }
     }
 
@@ -96,21 +138,72 @@ fun CadenceScreen(manager: WalkingCadenceManager) {
             history = spmHistory,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(74.dp)
+                .height(if (status != null) 52.dp else 74.dp)
         )
+        if (status != null) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = statusLabel(status),
+                fontSize = 11.sp,
+                color = Color(0xFFFFCC80),
+                textAlign = TextAlign.Center,
+                lineHeight = 13.sp
+            )
+        }
         Spacer(modifier = Modifier.height(6.dp))
+        val action = actionFor(status)
         Button(
             modifier = Modifier
                 .height(30.dp)
-                .width(76.dp),
-            onClick = { manager.resetHistory() }
+                .width(if (action == CadenceAction.RESET) 76.dp else 96.dp),
+            onClick = {
+                when (action) {
+                    CadenceAction.ALLOW -> requestPermissionsOrSettings()
+                    CadenceAction.RETRY -> manager.ensureAlwaysOnStarted()
+                    CadenceAction.RESET -> manager.resetHistory()
+                }
+            }
         ) {
             Text(
-                text = "Reset",
+                text = stringResource(action.labelRes),
                 fontSize = 11.sp
             )
         }
     }
+}
+
+private enum class CadenceAction(val labelRes: Int) {
+    ALLOW(R.string.action_allow),
+    RETRY(R.string.action_retry),
+    RESET(R.string.action_reset)
+}
+
+private fun actionFor(status: CadenceStatus?): CadenceAction {
+    return when (status) {
+        CadenceStatus.NEED_ACTIVITY_RECOGNITION -> CadenceAction.ALLOW
+        CadenceStatus.SENSOR_ACCESS_DENIED,
+        CadenceStatus.MONITOR_START_FAILED -> CadenceAction.RETRY
+        CadenceStatus.NO_STEP_SENSOR, null -> CadenceAction.RESET
+    }
+}
+
+@Composable
+private fun statusLabel(status: CadenceStatus?): String {
+    return when (status) {
+        CadenceStatus.NEED_ACTIVITY_RECOGNITION ->
+            stringResource(R.string.status_need_activity_recognition)
+        CadenceStatus.NO_STEP_SENSOR -> stringResource(R.string.status_no_step_sensor)
+        CadenceStatus.SENSOR_ACCESS_DENIED -> stringResource(R.string.status_sensor_access_denied)
+        CadenceStatus.MONITOR_START_FAILED -> stringResource(R.string.status_monitor_start_failed)
+        null -> ""
+    }
+}
+
+private fun openAppPermissionSettings(context: Context) {
+    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+        data = Uri.fromParts("package", context.packageName, null)
+    }
+    context.startActivity(intent)
 }
 
 @Composable
