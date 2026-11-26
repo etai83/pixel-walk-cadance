@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="tile_description">Live walking cadence (SPM) and 10-second bar graph</string>
+    <string name="status_need_activity_recognition">Allow physical activity to track cadence</string>
+    <string name="status_no_step_sensor">No step sensor on this watch</string>
+    <string name="status_sensor_access_denied">Can\'t read the step sensor</string>
+    <string name="status_monitor_start_failed">May pause if you leave the app</string>
+    <string name="action_allow">Allow</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_reset">Reset</string>
 </resources>

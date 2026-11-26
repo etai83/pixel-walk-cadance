@@ -41,6 +41,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.health:health-services-client:1.1.0-alpha05")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.8.1")
     implementation("androidx.wear.compose:compose-material:1.4.0")
@@ -49,4 +50,6 @@ dependencies {
     implementation("androidx.wear.protolayout:protolayout:1.2.0")
     implementation("androidx.wear.protolayout:protolayout-material:1.2.0")
     implementation("androidx.wear.watchface:watchface-complications-data-source-ktx:1.2.1")
+
+    testImplementation("junit:junit:4.13.2")
 }

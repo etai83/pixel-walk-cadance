@@ -31,6 +31,7 @@ import kotlinx.coroutines.guava.future
 private const val RESOURCES_VERSION = "1"
 private const val ID_RESET_HISTORY = "reset_history"
 private const val ID_OPEN_APP = "open_app"
+private const val ID_ALLOW_PERMISSION = "allow_permission"
 
 class CadenceTileService : TileService() {
 
@@ -39,7 +40,10 @@ class CadenceTileService : TileService() {
     override fun onTileRequest(requestParams: RequestBuilders.TileRequest): ListenableFuture<Tile> {
         return serviceScope.future {
             val manager = WalkingCadenceManager.getInstance(applicationContext)
-            manager.ensureAlwaysOnStarted()
+            val needsPermission = !manager.hasPermission()
+            if (!needsPermission) {
+                manager.ensureAlwaysOnStarted()
+            }
 
             if (requestParams.currentState.lastClickableId == ID_RESET_HISTORY) {
                 manager.resetHistory()
@@ -67,11 +71,18 @@ class CadenceTileService : TileService() {
                 .setOnClick(ActionBuilders.LoadAction.Builder().build())
                 .build()
 
+            val allowClickable = Clickable.Builder()
+                .setId(ID_ALLOW_PERMISSION)
+                .setOnClick(openAppAction)
+                .build()
+
             val rootElement = buildTileLayout(
                 currentSpm = currentSpm,
                 history = history,
                 openAppClickable = openAppClickable,
-                resetClickable = resetClickable
+                actionClickable = if (needsPermission) allowClickable else resetClickable,
+                actionLabel = if (needsPermission) "Allow" else "Reset",
+                needsPermission = needsPermission
             )
 
             Tile.Builder()
@@ -96,7 +107,9 @@ class CadenceTileService : TileService() {
         currentSpm: Int,
         history: List<Int>,
         openAppClickable: Clickable,
-        resetClickable: Clickable
+        actionClickable: Clickable,
+        actionLabel: String,
+        needsPermission: Boolean
     ): LayoutElementBuilders.LayoutElement {
         val header = Text.Builder()
             .setText("$currentSpm SPM")
@@ -116,17 +129,19 @@ class CadenceTileService : TileService() {
 
         val barRow = buildBarGraphRow(history)
 
+        val buttonColor = if (needsPermission) 0xFF00E5FF.toInt() else 0xFF37474F.toInt()
+        val buttonTextColor = if (needsPermission) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
         val actionButton = Box.Builder()
-            .setWidth(dp(76f))
+            .setWidth(dp(if (needsPermission) 96f else 76f))
             .setHeight(dp(28f))
             .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
             .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
             .setModifiers(
                 Modifiers.Builder()
-                    .setClickable(resetClickable)
+                    .setClickable(actionClickable)
                     .setBackground(
                         Background.Builder()
-                            .setColor(argb(0xFF37474F.toInt()))
+                            .setColor(argb(buttonColor))
                             .setCorner(Corner.Builder().setRadius(dp(14f)).build())
                             .build()
                     )
@@ -134,12 +149,12 @@ class CadenceTileService : TileService() {
             )
             .addContent(
                 Text.Builder()
-                    .setText("Reset")
+                    .setText(actionLabel)
                     .setFontStyle(
                         FontStyle.Builder()
                             .setSize(sp(11f))
                             .setWeight(LayoutElementBuilders.FONT_WEIGHT_BOLD)
-                            .setColor(argb(0xFFFFFFFF.toInt()))
+                            .setColor(argb(buttonTextColor))
                             .build()
                     )
                     .build()

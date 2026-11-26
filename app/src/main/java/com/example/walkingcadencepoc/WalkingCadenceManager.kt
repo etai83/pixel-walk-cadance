@@ -8,6 +8,7 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -57,6 +58,9 @@ class WalkingCadenceManager private constructor(context: Context) : SensorEventL
     private val _spmHistory = MutableStateFlow<List<Int>>(emptyList())
     val spmHistory: StateFlow<List<Int>> = _spmHistory.asStateFlow()
 
+    private val _statusMessage = MutableStateFlow<CadenceStatus?>(null)
+    val statusMessage: StateFlow<CadenceStatus?> = _statusMessage.asStateFlow()
+
     fun hasPermission(): Boolean {
         return ContextCompat.checkSelfPermission(
             appContext,
@@ -64,34 +68,115 @@ class WalkingCadenceManager private constructor(context: Context) : SensorEventL
         ) == PackageManager.PERMISSION_GRANTED
     }
 
+    fun permissionsToRequest(): List<String> {
+        val granted = buildSet {
+            if (hasPermission()) add(CadenceStartPolicy.ACTIVITY_RECOGNITION)
+            if (notificationsGranted()) add(CadenceStartPolicy.POST_NOTIFICATIONS)
+        }
+        return CadenceStartPolicy.permissionsToRequest(Build.VERSION.SDK_INT, granted)
+    }
+
     fun startSensorsOnly(): Boolean {
         if (!hasPermission()) {
+            stopMonitoring()
+            _statusMessage.value = CadenceStatus.NEED_ACTIVITY_RECOGNITION
             return false
         }
-        registerSingleHardwareSensor(
+        val registered = registerSingleHardwareSensor(
             batchLatencyUs = if (isForegroundUiActive) 0 else BACKGROUND_BATCH_LATENCY_US
         )
+        val status = CadenceStartPolicy.statusForSensorStart(
+            activityRecognitionGranted = true,
+            hasStepSensor = registered || hasAnyStepSensor(),
+            sensorRegistrationSucceeded = registered
+        )
+        if (status != null) {
+            _isTracking.value = false
+            _statusMessage.value = status
+            return false
+        }
         _isTracking.value = true
+        clearSensorStatus()
         return true
     }
 
     fun ensureAlwaysOnStarted(): Boolean {
-        if (!startSensorsOnly()) {
-            return false
+        return try {
+            if (!startSensorsOnly()) {
+                return false
+            }
+            if (!CadenceAlwaysOnService.isRunning) {
+                val started = CadenceAlwaysOnService.start(appContext)
+                if (!started && isForegroundUiActive) {
+                    _statusMessage.value = CadenceStatus.MONITOR_START_FAILED
+                }
+            } else if (_statusMessage.value == CadenceStatus.MONITOR_START_FAILED) {
+                _statusMessage.value = null
+            }
+            true
+        } catch (e: Exception) {
+            Log.e("WalkingCadence", "Failed to start cadence monitor", e)
+            _isTracking.value = false
+            _statusMessage.value = CadenceStatus.MONITOR_START_FAILED
+            false
         }
-        if (!CadenceAlwaysOnService.isRunning) {
-            CadenceAlwaysOnService.start(appContext)
+    }
+
+    /**
+     * The service calls this when `startForeground()` cannot succeed.
+     * Stopping here avoids the system crash that follows a half-started
+     * foreground service. Sensor updates can continue while the app is open.
+     */
+    fun noteForegroundPromotionFailed() {
+        if (!hasPermission()) {
+            stopMonitoring()
+            _statusMessage.value = CadenceStatus.NEED_ACTIVITY_RECOGNITION
+            return
         }
-        return true
+        if (isForegroundUiActive) {
+            _statusMessage.value = CadenceStatus.MONITOR_START_FAILED
+        }
+    }
+
+    /** Stops a health foreground service that can no longer meet its permission requirement. */
+    fun releaseIfUnauthorized() {
+        if (hasPermission()) return
+        stopMonitoring()
+        _statusMessage.value = CadenceStatus.NEED_ACTIVITY_RECOGNITION
+    }
+
+    fun stopMonitoring() {
+        val plan = CadenceStartPolicy.planStop(
+            sensorsRegistered = registeredSensor != null,
+            serviceRunning = CadenceAlwaysOnService.isRunning
+        )
+        activeTickerJob?.cancel()
+        activeTickerJob = null
+        if (plan.unregisterSensors) {
+            unregisterQuietly()
+        }
+        _isTracking.value = false
+        _cadenceSpm.value = 0.0
+        if (plan.stopService) {
+            CadenceAlwaysOnService.stop(appContext)
+        }
     }
 
     fun setForegroundUiActive(active: Boolean) {
         if (isForegroundUiActive == active) return
         isForegroundUiActive = active
         if (_isTracking.value && hasPermission()) {
-            registerSingleHardwareSensor(
+            val registered = registerSingleHardwareSensor(
                 batchLatencyUs = if (active) 0 else BACKGROUND_BATCH_LATENCY_US
             )
+            if (!registered) {
+                _isTracking.value = false
+                _statusMessage.value = CadenceStartPolicy.statusForSensorStart(
+                    activityRecognitionGranted = true,
+                    hasStepSensor = hasAnyStepSensor(),
+                    sensorRegistrationSucceeded = false
+                )
+            }
         }
     }
 
@@ -100,37 +185,92 @@ class WalkingCadenceManager private constructor(context: Context) : SensorEventL
         requestTileUpdate()
     }
 
-    private fun registerSingleHardwareSensor(batchLatencyUs: Int) {
-        if (registeredSensor != null && currentBatchLatencyUs == batchLatencyUs) return
+    private fun registerSingleHardwareSensor(batchLatencyUs: Int): Boolean {
+        if (registeredSensor != null && currentBatchLatencyUs == batchLatencyUs) return true
 
         // Unregister previous latency mode before re-registering
         if (registeredSensor != null) {
-            sensorManager.unregisterListener(this)
-            registeredSensor = null
+            unregisterQuietly()
         }
 
-        // Prefer single low-power MCU Step Cadence sensor (Pixel Watch 4 type 131087);
-        // fall back to TYPE_STEP_DETECTOR only on devices without hardware step_cadence.
-        val sensor = sensorManager.getSensorList(Sensor.TYPE_ALL).firstOrNull {
-            it.type == PIXEL_STEP_CADENCE_SENSOR_TYPE ||
-                it.stringType.contains("step_cadence", ignoreCase = true)
-        } ?: sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
+        val cadence = findStepCadenceSensor()
+        val detector = runCatching {
+            sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
+        }.getOrNull()
+        // Prefer the Pixel Watch hardware step-cadence sensor, then TYPE_STEP_DETECTOR.
+        // A vendor sensor that requires a permission we do not hold throws; try the next one.
+        val order = CadenceStartPolicy.sensorTryOrder(
+            hasCadence = cadence != null,
+            hasDetector = detector != null && detector != cadence
+        )
+        for (kind in order) {
+            val sensor = when (kind) {
+                CadenceStartPolicy.StepSensorKind.CADENCE -> cadence
+                CadenceStartPolicy.StepSensorKind.DETECTOR -> detector
+            } ?: continue
+            if (tryRegister(sensor, batchLatencyUs)) {
+                registeredSensor = sensor
+                currentBatchLatencyUs = batchLatencyUs
+                Log.d(
+                    "WalkingCadence",
+                    "Registered single sensor ${sensor.name} (type=${sensor.type}) batchUs=$batchLatencyUs"
+                )
+                return true
+            }
+        }
+        return false
+    }
 
-        if (sensor != null) {
-            val ok = sensorManager.registerListener(
+    private fun findStepCadenceSensor(): Sensor? {
+        val sensors = runCatching { sensorManager.getSensorList(Sensor.TYPE_ALL) }.getOrNull()
+            ?: return null
+        return sensors.firstOrNull { sensor ->
+            runCatching {
+                sensor.type == PIXEL_STEP_CADENCE_SENSOR_TYPE ||
+                    sensor.stringType.contains("step_cadence", ignoreCase = true)
+            }.getOrDefault(false)
+        }
+    }
+
+    private fun hasAnyStepSensor(): Boolean {
+        return findStepCadenceSensor() != null ||
+            runCatching { sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR) }.getOrNull() != null
+    }
+
+    private fun tryRegister(sensor: Sensor, batchLatencyUs: Int): Boolean {
+        return try {
+            sensorManager.registerListener(
                 this,
                 sensor,
                 SensorManager.SENSOR_DELAY_NORMAL,
                 batchLatencyUs
             )
-            if (ok) {
-                registeredSensor = sensor
-                currentBatchLatencyUs = batchLatencyUs
-            }
-            Log.d(
-                "WalkingCadence",
-                "Registered single sensor ${sensor.name} (type=${sensor.type}) batchUs=$batchLatencyUs ok=$ok"
-            )
+        } catch (e: SecurityException) {
+            Log.w("WalkingCadence", "Sensor ${sensor.name} (type=${sensor.type}) denied", e)
+            false
+        }
+    }
+
+    private fun unregisterQuietly() {
+        runCatching { sensorManager.unregisterListener(this) }
+        registeredSensor = null
+        currentBatchLatencyUs = -1
+    }
+
+    private fun notificationsGranted(): Boolean {
+        if (Build.VERSION.SDK_INT < 33) return true
+        return ContextCompat.checkSelfPermission(
+            appContext,
+            Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun clearSensorStatus() {
+        when (_statusMessage.value) {
+            CadenceStatus.NEED_ACTIVITY_RECOGNITION,
+            CadenceStatus.NO_STEP_SENSOR,
+            CadenceStatus.SENSOR_ACCESS_DENIED -> _statusMessage.value = null
+            CadenceStatus.MONITOR_START_FAILED, null -> Unit
         }
     }
 
